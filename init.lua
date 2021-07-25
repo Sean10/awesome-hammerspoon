@@ -36,15 +36,7 @@ hs.loadSpoon("ModalMgr")
 -- Define default Spoons which will be loaded later
 if not hspoon_list then
     hspoon_list = {
-        "AClock",
-        "BingDaily",
-        "CircleClock",
-        "ClipShow",
-        "CountDown",
-        "HCalendar",
-        "HSaria2",
         "HSearch",
-        "SpeedMenu",
         "WinWin",
         "FnMate",
     }
@@ -79,7 +71,9 @@ if not hsapp_list then
         {key = 'f', name = 'Finder'},
         {key = 's', name = 'Safari'},
         {key = 't', name = 'Terminal'},
-        {key = 'v', id = 'com.apple.ActivityMonitor'},
+	{key = 'v', name = 'Visual Studio Code'},
+	{key = 'c', name = 'Google Chrome'},
+        {key = 'x', id = 'com.apple.ActivityMonitor'},
         {key = 'y', id = 'com.apple.systempreferences'},
     }
 end
@@ -371,3 +365,19 @@ end
 ----------------------------------------------------------------------------------------------------
 -- Finally we initialize ModalMgr supervisor
 spoon.ModalMgr.supervisor:enter()
+
+
+
+hs.loadSpoon('TextClipboardHistory')
+spoon.TextClipboardHistory.show_in_menubar = false
+spoon.TextClipboardHistory.paste_on_select = true
+spoon.TextClipboardHistory.honor_ignoredidentifiers = true
+spoon.TextClipboardHistory:start()
+hs.hotkey.bind("alt", "V", function()
+    spoon.TextClipboardHistory:toggleClipboard()
+    -- exit()
+end)
+
+hs.hotkey.bind("shift", "f11", function()
+    hidden_status = os.execute("/usr/local/bin/ddcctl -d 1 -i 15")
+end)

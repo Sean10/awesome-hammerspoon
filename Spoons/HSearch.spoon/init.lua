@@ -229,10 +229,15 @@ function obj:toggleShow()
         obj.chooser:choices(obj.sources_overview)
     end
     if obj.chooser:isVisible() then
+        -- print(1)
+        -- hs.timer.doAfter(0, function() obj.chooser:hide() end)
         obj.chooser:hide()
+        -- print(2)
         obj.trigger:disable()
+        -- print(3)
         for _,val in pairs(obj.hotkeys) do
             for i=1,#val do
+                print(5)
                 val[i]:disable()
             end
         end
