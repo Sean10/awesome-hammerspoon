@@ -381,3 +381,26 @@ end)
 hs.hotkey.bind("shift", "f11", function()
     hidden_status = os.execute("/usr/local/bin/ddcctl -d 1 -i 15")
 end)
+
+hs.hotkey.bind("alt", "o", function()
+    logger = hs.logger.new('preview newest screenshot')
+    max = 0
+    newest_file = nil
+    for file in hs.fs.dir("~/Desktop") do
+        filepath = hs.fs.pathToAbsolute(table.concat({"~/Desktop", file}, "/"))
+        time = hs.fs.attributes(filepath)['creation']
+
+        if max < time
+        then
+            max = time
+            newest_file = filepath
+        end
+    end
+
+    if (max ~= 0)
+    then
+        logger.i("open \""..newest_file.."\"")
+        res = os.execute("open \""..newest_file.."\"")
+        logger.i(res)
+    end
+end)
