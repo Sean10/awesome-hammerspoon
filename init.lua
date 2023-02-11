@@ -72,7 +72,9 @@ if not hsapp_list then
         {key = 's', name = 'Safari'},
         {key = 't', name = 'Terminal'},
 	{key = 'v', name = 'Visual Studio Code'},
-	{key = 'c', name = 'Google Chrome'},
+--	{key = 'c', name = 'Google Chrome'},
+	{key = 'e', name = 'Microsoft Edge'},	
+	{key = 'o', name = 'Obsidian'},	
         {key = 'x', id = 'com.apple.ActivityMonitor'},
         {key = 'y', id = 'com.apple.systempreferences'},
     }
