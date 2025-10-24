@@ -83,6 +83,11 @@ obj.show_in_menubar = true
 --- String to show in the menubar if `TextClipboardHistory.show_in_menubar` is `true`. Defaults to `"\u{1f4ce}"`, which is the [Unicode paperclip character](https://codepoints.net/U+1F4CE)
 obj.menubar_title   = "\u{1f4ce}"
 
+--- TextClipboardHistory.highlight_search_matches
+--- Variable
+--- Whether to highlight search matches in the chooser. Defaults to `true`.
+obj.highlight_search_matches = true
+
 ----------------------------------------------------------------------
 
 -- Internal variable - Chooser/menu object
@@ -91,6 +96,12 @@ obj.selectorobj = nil
 obj.prevFocusedWindow = nil
 -- Internal variable - Timer object to look for pasteboard changes
 obj.timer = nil
+-- Internal variable - Cache for menu data to improve search performance
+obj.menuDataCache = nil
+-- Internal variable - Cache for filtered menu data
+obj.filteredMenuDataCache = nil
+-- Internal variable - Last search query to avoid unnecessary recalculation
+obj.lastSearchQuery = ""
 
 local pasteboard = require("hs.pasteboard") -- http://www.hammerspoon.org/docs/hs.pasteboard.html
 local hashfn   = require("hs.hash").MD5
@@ -127,8 +138,10 @@ function obj:_processSelectedItem(value)
       if value.action and actions[value.action] then
          actions[value.action](value)
       elseif value.text then
-         pasteboard.setContents(value.text)
-         self:pasteboardToClipboard(value.text)
+         -- Use originalText if available (for truncated entries), otherwise use text
+         local textToUse = value.originalText or value.text
+         pasteboard.setContents(textToUse)
+         self:pasteboardToClipboard(textToUse)
          if (self.paste_on_select) then
             hs.eventtap.keyStroke({"cmd"}, "v")
          end
@@ -145,6 +158,11 @@ function obj:clearAll()
    clipboard_history = {}
    _persistHistory()
    last_change = pasteboard.changeCount()
+   
+   -- Clear cache when history is cleared
+   self.menuDataCache = nil
+   self.filteredMenuDataCache = nil
+   self.lastSearchQuery = ""
 end
 
 --- TextClipboardHistory:clearLastItem()
@@ -154,6 +172,114 @@ function obj:clearLastItem()
    table.remove(clipboard_history, 1)
    _persistHistory()
    last_change = pasteboard.changeCount()
+   
+   -- Clear cache when history changes
+   self.menuDataCache = nil
+   self.filteredMenuDataCache = nil
+   self.lastSearchQuery = ""
+end
+
+-- Internal method: Highlight matching text in search results
+function obj:_highlightMatches(text, query)
+   if not query or query == "" then
+      return text
+   end
+   
+   local queryLower = string.lower(query)
+   local textLower = string.lower(text)
+   
+   -- Find the first occurrence of the query
+   local startPos, endPos = string.find(textLower, queryLower, 1, true)
+   if startPos then
+      -- Add visual indicators around the match
+      local before = string.sub(text, 1, startPos - 1)
+      local match = string.sub(text, startPos, endPos)
+      local after = string.sub(text, endPos + 1)
+      return before .. "【" .. match .. "】" .. after
+   end
+   
+   return text
+end
+
+-- Internal method: Smart search filtering with fuzzy matching
+function obj:_filterMenuData(menuData, query)
+   if not query or query == "" then
+      return menuData
+   end
+   
+   local filtered = {}
+   local queryLower = string.lower(query)
+   
+   -- Split query into words for multi-word search
+   local queryWords = {}
+   for word in string.gmatch(queryLower, "%S+") do
+      table.insert(queryWords, word)
+   end
+   
+   for _, item in ipairs(menuData) do
+      if item.action then
+         -- Always include control items (clear, toggle, etc.)
+         table.insert(filtered, item)
+      elseif item.text and item.originalText then
+         local textLower = string.lower(item.originalText)
+         local displayTextLower = string.lower(item.text)
+         
+         -- Check if all query words are found in the text
+         local allWordsFound = true
+         for _, word in ipairs(queryWords) do
+            if not string.find(textLower, word, 1, true) and 
+               not string.find(displayTextLower, word, 1, true) then
+               allWordsFound = false
+               break
+            end
+         end
+         
+         if allWordsFound then
+            -- Calculate relevance score for sorting
+            local score = 0
+            
+            -- Exact match gets highest score
+            if textLower == queryLower then
+               score = 1000
+            -- Starts with query gets high score
+            elseif string.find(textLower, "^" .. queryLower) then
+               score = 500
+            -- Contains query as whole word gets medium score
+            elseif string.find(textLower, "%f[%w]" .. queryLower .. "%f[%W]") then
+               score = 100
+            -- Contains query gets base score
+            else
+               score = 10
+            end
+            
+            -- Boost score for shorter text (more relevant)
+            score = score + (1000 / math.max(string.len(item.originalText), 1))
+            
+            -- Create a copy of the item with highlighted text
+            local highlightedItem = {}
+            for k, v in pairs(item) do
+               highlightedItem[k] = v
+            end
+            
+            -- Highlight matches in the display text if enabled
+            if self.highlight_search_matches then
+               highlightedItem.text = self:_highlightMatches(item.text, query)
+            end
+            highlightedItem.searchScore = score
+            
+            table.insert(filtered, highlightedItem)
+         end
+      end
+   end
+   
+   -- Sort by relevance score (higher is better)
+   table.sort(filtered, function(a, b)
+      local scoreA = a.searchScore or 0
+      local scoreB = b.searchScore or 0
+      return scoreA > scoreB
+   end)
+   
+   return filtered
 end
 
 -- Internal method: deduplicate the given list, and restrict it to the history size limit
@@ -185,14 +311,33 @@ function obj:pasteboardToClipboard(item)
    table.insert(clipboard_history, 1, item)
    clipboard_history = self:dedupe_and_resize(clipboard_history)
    _persistHistory() -- updates the saved history
+   
+   -- Clear cache when history changes
+   self.menuDataCache = nil
+   self.filteredMenuDataCache = nil
+   self.lastSearchQuery = ""
 end
 
 -- Internal function - fill in the chooser options, including the control options
 function obj:_populateChooser()
-   menuData = {}
+   -- Use cached data if available and clipboard hasn't changed
+   if self.menuDataCache and last_change == pasteboard.changeCount() then
+      return self.menuDataCache
+   end
+   
+   local menuData = {}
    for k,v in pairs(clipboard_history) do
       if (type(v) == "string") then
-         table.insert(menuData, {text=v, subText=""})
+         -- Truncate long text for better performance
+         local displayText = v
+         local maxLength = 200
+         if string.len(v) > maxLength then
+            displayText = string.sub(v, 1, maxLength) .. "..."
+         end
+         -- Replace newlines with spaces for better display
+         displayText = string.gsub(displayText, "\n", " ")
+         displayText = string.gsub(displayText, "\r", " ")
+         table.insert(menuData, {text=displayText, subText="", originalText=v})
       end
    end
    if #menuData == 0 then
@@ -210,8 +355,35 @@ function obj:_populateChooser()
                    action = 'toggle_paste_on_select',
                    image = (self.paste_on_select and hs.image.imageFromName('NSSwitchEnabledOn') or hs.image.imageFromName('NSSwitchEnabledOff'))
    })
-   self.logger.df("Returning menuData = %s", hs.inspect(menuData))
+   
+   -- Cache the menu data
+   self.menuDataCache = menuData
+   self.logger.df("Populated %d clipboard items", #menuData - 2)
    return menuData
+end
+
+-- Internal function - populate chooser with search filtering
+function obj:_populateChooserWithSearch(query)
+   local baseMenuData = self:_populateChooser()
+   
+   -- If no query, return all items
+   if not query or query == "" then
+      self.lastSearchQuery = ""
+      return baseMenuData
+   end
+   
+   -- If query hasn't changed, return cached results
+   if query == self.lastSearchQuery and self.filteredMenuDataCache then
+      return self.filteredMenuDataCache
+   end
+   
+   -- Filter and cache results
+   local filteredData = self:_filterMenuData(baseMenuData, query)
+   self.filteredMenuDataCache = filteredData
+   self.lastSearchQuery = query
+   
+   self.logger.df("Filtered to %d items for query: %s", #filteredData, query)
+   return filteredData
 end
 
 --- TextClipboardHistory:shouldBeStored()
@@ -268,6 +440,14 @@ function obj:start()
    clipboard_history = self:dedupe_and_resize(getSetting("items", {})) -- If no history is saved on the system, create an empty history
    last_change = pasteboard.changeCount() -- keeps track of how many times the pasteboard owner has changed // Indicates a new copy has been made
    self.selectorobj = hs.chooser.new(hs.fnutils.partial(self._processSelectedItem, self))
+   
+   -- Set up dynamic search filtering
+   self.selectorobj:queryChangedCallback(function(query)
+      local filteredChoices = self:_populateChooserWithSearch(query)
+      self.selectorobj:choices(filteredChoices)
+   end)
+   
+   -- Initial population
    self.selectorobj:choices(hs.fnutils.partial(self._populateChooser, self))
 
    --Checks for changes on the pasteboard. Is it possible to replace with eventtap?
