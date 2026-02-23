@@ -1,7 +1,7 @@
 hs.hotkey.alertDuration = 0
-hs.hints.showTitleThresh = 0
+hs.hints.showTitleThresh = 30
 hs.window.animationDuration = 0
-
+hs.hints.style = "vimperator"
 -- Use the standardized config location, if present
 custom_config = hs.fs.pathToAbsolute(os.getenv("HOME") .. '/.config/hammerspoon/private/config.lua')
 if custom_config then
@@ -55,6 +55,7 @@ hswhints_keys = hswhints_keys or {"alt", "tab"}
 if string.len(hswhints_keys[2]) > 0 then
     spoon.ModalMgr.supervisor:bind(hswhints_keys[1], hswhints_keys[2], 'Show Window Hints', function()
         spoon.ModalMgr:deactivateAll()
+
         hs.hints.windowHints()
     end)
 end
