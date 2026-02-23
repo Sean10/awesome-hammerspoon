@@ -139,6 +139,9 @@ function obj:togglePasteOnSelect()
    hs.notify.show("TextClipboardHistory", "Paste-on-select is now " .. (self.paste_on_select and "enabled" or "disabled"), "")
 end
 
+-- Internal variable - File watcher for snippets
+obj.snippetFileWatcher = nil
+
 -- Internal method - Load snippets from config file
 -- Format: snippets separated by empty lines, each snippet can have multiple lines
 function obj:loadSnippets()
@@ -161,12 +164,14 @@ function obj:loadSnippets()
       return
    end
 
-   -- Parse snippets: split by empty lines
+   -- Parse snippets: split by empty lines, using Set to avoid duplicates
    local snippets = {}
+   local seen = {}
    for snippet in content:gmatch("(.-)\n\n+") do
       -- Remove trailing whitespace/newlines from each snippet
       snippet = snippet:gsub("%s+$", "")
-      if snippet and snippet ~= "" then
+      if snippet and snippet ~= "" and not seen[snippet] then
+         seen[snippet] = true
          table.insert(snippets, snippet)
       end
    end
@@ -175,13 +180,19 @@ function obj:loadSnippets()
    local lastSnippet = content:match(".-%S.*$")
    if lastSnippet and lastSnippet:match("%S") then
       lastSnippet = lastSnippet:gsub("%s+$", "")
-      if lastSnippet and lastSnippet ~= "" then
+      if lastSnippet and lastSnippet ~= "" and not seen[lastSnippet] then
+         seen[lastSnippet] = true
          table.insert(snippets, lastSnippet)
       end
    end
 
    self.snippets = snippets
    self.logger.df("Loaded %d snippets from %s", #snippets, self.snippetFilePath)
+
+   -- Clear cache when snippets are reloaded
+   self.menuDataCache = nil
+   self.filteredMenuDataCache = nil
+   self.lastSearchQuery = ""
 end
 
 -- Internal method - Use a snippet (copy to clipboard and update LRU)
@@ -582,6 +593,16 @@ function obj:start()
    -- Load snippets from config file
    self:loadSnippets()
 
+   -- Set up file watcher for snippets
+   if self.snippetFileWatcher then
+      self.snippetFileWatcher:stop()
+   end
+   self.snippetFileWatcher = hs.pathwatcher.new(self.snippetFilePath, function(path)
+      self.logger.df("Snippets file changed, reloading...")
+      self:loadSnippets()
+   end)
+   self.snippetFileWatcher:start()
+
    -- Initialize snippet history (for LRU)
    self.snippetHistory = getSetting("snippetHistory", {})
 
@@ -632,6 +653,24 @@ function obj:toggleClipboard()
       self.selectorobj:hide()
    else
       self:showClipboard()
+   end
+end
+
+--- TextClipboardHistory:stop()
+--- Method
+--- Stop the clipboard history collector and clean up resources
+function obj:stop()
+   if self.snippetFileWatcher then
+      self.snippetFileWatcher:stop()
+      self.snippetFileWatcher = nil
+   end
+   if self.timer then
+      self.timer:stop()
+      self.timer = nil
+   end
+   if self.menubaritem then
+      self.menubaritem:delete()
+      self.menubaritem = nil
    end
 end
 
