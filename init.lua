@@ -373,7 +373,7 @@ spoon.TextClipboardHistory.show_in_menubar = false
 spoon.TextClipboardHistory.paste_on_select = true
 spoon.TextClipboardHistory.honor_ignoredidentifiers = true
 -- Reduce history size for better performance
-spoon.TextClipboardHistory.hist_size = 50
+spoon.TextClipboardHistory.hist_size = 500
 -- Increase check frequency slightly for better responsiveness
 spoon.TextClipboardHistory.frequency = 1.0
 -- Enable search highlighting for better UX
