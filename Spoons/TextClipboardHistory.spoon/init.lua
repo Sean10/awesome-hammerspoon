@@ -88,9 +88,24 @@ obj.menubar_title   = "\u{1f4ce}"
 --- Whether to highlight search matches in the chooser. Defaults to `true`.
 obj.highlight_search_matches = true
 
+--- TextClipboardHistory.enableSnippets
+--- Variable
+--- Whether to enable snippets from config file. Defaults to `true`
+obj.enableSnippets = true
+
+--- TextClipboardHistory.snippetFilePath
+--- Variable
+--- Path to the snippets config file. Defaults to `~/.config/hammerspoon/snippets.txt`
+obj.snippetFilePath = os.getenv("HOME") .. "/.config/hammerspoon/snippets.txt"
+
 ----------------------------------------------------------------------
 
--- Internal variable - Chooser/menu object
+-- Internal variable - Snippets list
+obj.snippets = nil
+-- Internal variable - Snippet access history (for LRU sorting)
+obj.snippetHistory = nil
+-- Internal variable - Clipboard history access timestamps (for LRU sorting)
+obj.clipboardHistoryLRU = nil
 obj.selectorobj = nil
 -- Internal variable - Cache for focused window to work around the current window losing focus after the chooser comes up
 obj.prevFocusedWindow = nil
@@ -124,6 +139,71 @@ function obj:togglePasteOnSelect()
    hs.notify.show("TextClipboardHistory", "Paste-on-select is now " .. (self.paste_on_select and "enabled" or "disabled"), "")
 end
 
+-- Internal method - Load snippets from config file
+-- Format: snippets separated by empty lines, each snippet can have multiple lines
+function obj:loadSnippets()
+   if not self.enableSnippets then
+      self.snippets = {}
+      return
+   end
+
+   local file = io.open(self.snippetFilePath, "r")
+   if not file then
+      self.snippets = {}
+      return
+   end
+
+   local content = file:read("*a")
+   file:close()
+
+   if not content or content == "" then
+      self.snippets = {}
+      return
+   end
+
+   -- Parse snippets: split by empty lines
+   local snippets = {}
+   for snippet in content:gmatch("(.-)\n\n+") do
+      -- Remove trailing whitespace/newlines from each snippet
+      snippet = snippet:gsub("%s+$", "")
+      if snippet and snippet ~= "" then
+         table.insert(snippets, snippet)
+      end
+   end
+
+   -- Handle case where there's no trailing empty line
+   local lastSnippet = content:match(".-%S.*$")
+   if lastSnippet and lastSnippet:match("%S") then
+      lastSnippet = lastSnippet:gsub("%s+$", "")
+      if lastSnippet and lastSnippet ~= "" then
+         table.insert(snippets, lastSnippet)
+      end
+   end
+
+   self.snippets = snippets
+   self.logger.df("Loaded %d snippets from %s", #snippets, self.snippetFilePath)
+end
+
+-- Internal method - Use a snippet (copy to clipboard and update LRU)
+function obj:useSnippet(snippetContent)
+   if not snippetContent then
+      return
+   end
+
+   -- Update LRU history
+   self.snippetHistory[snippetContent] = os.time()
+   setSetting("snippetHistory", self.snippetHistory)
+
+   -- Copy to clipboard
+   pasteboard.setContents(snippetContent)
+   self:pasteboardToClipboard(snippetContent)
+
+   -- Auto-paste
+   hs.eventtap.keyStroke({"cmd"}, "v")
+
+   last_change = pasteboard.changeCount()
+end
+
 -- Internal method - process the selected item from the chooser. An item may invoke special actions, defined in the `actions` variable.
 function obj:_processSelectedItem(value)
    local actions = {
@@ -137,9 +217,17 @@ function obj:_processSelectedItem(value)
    if value and type(value) == "table" then
       if value.action and actions[value.action] then
          actions[value.action](value)
-      elseif value.text then
+      elseif value.isSnippet and value.originalText then
+         -- Handle snippet selection
+         self:useSnippet(value.originalText)
+      elseif value.text and not value.action then
          -- Use originalText if available (for truncated entries), otherwise use text
          local textToUse = value.originalText or value.text
+
+         -- Update LRU for clipboard history item
+         self.clipboardHistoryLRU[textToUse] = os.time()
+         setSetting("clipboardHistoryLRU", self.clipboardHistoryLRU)
+
          pasteboard.setContents(textToUse)
          self:pasteboardToClipboard(textToUse)
          if (self.paste_on_select) then
@@ -158,7 +246,11 @@ function obj:clearAll()
    clipboard_history = {}
    _persistHistory()
    last_change = pasteboard.changeCount()
-   
+
+   -- Clear LRU history
+   self.clipboardHistoryLRU = {}
+   setSetting("clipboardHistoryLRU", {})
+
    -- Clear cache when history is cleared
    self.menuDataCache = nil
    self.filteredMenuDataCache = nil
@@ -324,22 +416,72 @@ function obj:_populateChooser()
    if self.menuDataCache and last_change == pasteboard.changeCount() then
       return self.menuDataCache
    end
-   
+
    local menuData = {}
-   for k,v in pairs(clipboard_history) do
+
+   -- Build items for sorting
+   local allItems = {}
+
+   -- Add snippets with LRU timestamp
+   if self.enableSnippets and self.snippets and #self.snippets > 0 then
+      for _, snippet in ipairs(self.snippets) do
+         local displayText = snippet
+         local maxLength = 200
+         if string.len(snippet) > maxLength then
+            displayText = string.sub(snippet, 1, maxLength) .. "..."
+         end
+         displayText = string.gsub(displayText, "\n", " ")
+         displayText = string.gsub(displayText, "\r", " ")
+
+         table.insert(allItems, {
+            text = "📋 " .. displayText,
+            subText = "Snippet",
+            originalText = snippet,
+            isSnippet = true,
+            lruTime = self.snippetHistory[snippet] or 0
+         })
+      end
+   end
+
+   -- Add clipboard history (index 1 = most recent)
+   for idx, v in ipairs(clipboard_history) do
       if (type(v) == "string") then
-         -- Truncate long text for better performance
          local displayText = v
          local maxLength = 200
          if string.len(v) > maxLength then
             displayText = string.sub(v, 1, maxLength) .. "..."
          end
-         -- Replace newlines with spaces for better display
          displayText = string.gsub(displayText, "\n", " ")
          displayText = string.gsub(displayText, "\r", " ")
-         table.insert(menuData, {text=displayText, subText="", originalText=v})
+
+         -- Use LRU timestamp if available, otherwise use index as fallback
+         local lruTime = self.clipboardHistoryLRU[v]
+         if not lruTime then
+            -- Give newer items higher timestamps based on index
+            lruTime = 1000000000 + (1000 - idx)
+         end
+
+         table.insert(allItems, {
+            text = displayText,
+            subText = "",
+            originalText = v,
+            isSnippet = false,
+            lruTime = lruTime
+         })
       end
    end
+
+   -- Sort by LRU (higher lruTime = more recent first)
+   table.sort(allItems, function(a, b)
+      return (a.lruTime or 0) > (b.lruTime or 0)
+   end)
+
+   -- Copy sorted items to menuData
+   for _, item in ipairs(allItems) do
+      table.insert(menuData, item)
+   end
+
+   -- Add control items
    if #menuData == 0 then
       table.insert(menuData, { text="",
                                subText="《Clipboard is empty》",
@@ -355,7 +497,7 @@ function obj:_populateChooser()
                    action = 'toggle_paste_on_select',
                    image = (self.paste_on_select and hs.image.imageFromName('NSSwitchEnabledOn') or hs.image.imageFromName('NSSwitchEnabledOff'))
    })
-   
+
    -- Cache the menu data
    self.menuDataCache = menuData
    self.logger.df("Populated %d clipboard items", #menuData - 2)
@@ -437,6 +579,15 @@ end
 --- Method
 --- Start the clipboard history collector
 function obj:start()
+   -- Load snippets from config file
+   self:loadSnippets()
+
+   -- Initialize snippet history (for LRU)
+   self.snippetHistory = getSetting("snippetHistory", {})
+
+   -- Initialize clipboard history LRU timestamps
+   self.clipboardHistoryLRU = getSetting("clipboardHistoryLRU", {})
+
    clipboard_history = self:dedupe_and_resize(getSetting("items", {})) -- If no history is saved on the system, create an empty history
    last_change = pasteboard.changeCount() -- keeps track of how many times the pasteboard owner has changed // Indicates a new copy has been made
    self.selectorobj = hs.chooser.new(hs.fnutils.partial(self._processSelectedItem, self))
