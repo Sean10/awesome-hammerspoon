@@ -17,9 +17,23 @@ obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.canvas = nil
 obj.ccount = nil
 obj.lastsession = nil
+obj.snippets = nil
+obj.snippetHistory = nil
 
 
 function obj:init()
+    -- Load snippets from config file
+    local snippets_path = os.getenv("HOME") .. "/.config/hammerspoon/snippets.lua"
+    local snippets_file = loadfile(snippets_path)
+    if snippets_file then
+        obj.snippets = snippets_file() or {}
+    else
+        obj.snippets = {}
+    end
+
+    -- Initialize snippet access history (for LRU)
+    obj.snippetHistory = {}
+
     obj.canvas = hs.canvas.new({x=0, y=0, w=0, h=0})
     obj.canvas[1] = {
         type = "rectangle",
@@ -93,6 +107,108 @@ function obj:fillModalKeys()
                 }
             end
         end
+    end
+end
+
+-- Render snippets in the sidebar with LRU ordering
+function obj:renderSnippets(filterText)
+    -- Calculate start index for rendering (after modal keys)
+    local startIdx = 6
+    if #obj.canvas >= startIdx then
+        -- Clear existing snippet items
+        while #obj.canvas > startIdx - 1 do
+            table.remove(obj.canvas)
+        end
+    end
+
+    if not obj.snippets or #obj.snippets == 0 then
+        return
+    end
+
+    -- Add header row for snippets
+    obj.canvas[startIdx] = {
+        type = "text",
+        text = "--- Snippets (press 1-9 to copy) ---",
+        textFont = "Menlo",
+        textSize = 11,
+        textColor = {hex = "#888888", alpha = 0.8},
+        frame = {
+            x = "1%",
+            y = "71%",
+            w = "68%",
+            h = "1%"
+        }
+    }
+    startIdx = startIdx + 1
+
+    -- Apply filter if provided (match against content)
+    local filteredSnippets = {}
+    local filterLower = filterText and filterText:lower() or ""
+
+    for _, snippet in ipairs(obj.snippets) do
+        -- Support both string and {content} formats for backwards compatibility
+        local content = type(snippet) == "string" and snippet or snippet.content
+        if not filterText or content:lower():find(filterLower, 1, true) then
+            table.insert(filteredSnippets, content)
+        end
+    end
+
+    -- Sort by LRU (recently used first)
+    table.sort(filteredSnippets, function(a, b)
+        local aTime = obj.snippetHistory[a] or 0
+        local bTime = obj.snippetHistory[b] or 0
+        return aTime > bTime
+    end)
+
+    -- Limit to 9 snippets (for number keys 1-9)
+    local maxSnippets = math.min(#filteredSnippets, 9)
+
+    for i = 1, maxSnippets do
+        local content = filteredSnippets[i]
+        local displayText = content:sub(1, 40)
+        if #content > 40 then
+            displayText = displayText .. "..."
+        end
+
+        obj.canvas[startIdx + i - 1] = {
+            type = "text",
+            text = i .. ". " .. displayText,
+            textFont = "Menlo",
+            textSize = 12,
+            textColor = {hex = "#00FF00", alpha = 0.9},
+            frame = {
+                x = "1%",
+                y = tostring((73 + i * 2.6) / 100),
+                w = "68%",
+                h = tostring(2.5 / 100)
+            }
+        }
+    end
+end
+
+-- Copy a snippet to clipboard and update LRU
+function obj:useSnippet(index)
+    if not obj.snippets or #obj.snippets == 0 then
+        return
+    end
+
+    -- Get filtered snippets (same logic as renderSnippets)
+    local filteredSnippets = {}
+    for _, snippet in ipairs(obj.snippets) do
+        local content = type(snippet) == "string" and snippet or snippet.content
+        table.insert(filteredSnippets, content)
+    end
+
+    table.sort(filteredSnippets, function(a, b)
+        local aTime = obj.snippetHistory[a] or 0
+        local bTime = obj.snippetHistory[b] or 0
+        return aTime > bTime
+    end)
+
+    if index >= 1 and index <= #filteredSnippets then
+        local content = filteredSnippets[index]
+        hs.pasteboard.setContents(content)
+        obj.snippetHistory[content] = os.time()
     end
 end
 
@@ -257,8 +373,10 @@ function obj:toggleShow()
             obj.ccount = change_count
         else
             obj:adjustCanvas()
-            obj.canvas:show()
         end
+        -- Always render snippets on show
+        obj:renderSnippets()
+        obj.canvas:show()
     end
 end
 

@@ -162,6 +162,15 @@ if spoon.ClipShow then
         spoon.ModalMgr:deactivate({"clipshowM"})
     end)
 
+    -- Snippet quick copy with number keys 1-9
+    for i = 1, 9 do
+        cmodal:bind('', tostring(i), "Use snippet " .. i, function()
+            spoon.ClipShow:useSnippet(i)
+            spoon.ClipShow:toggleShow()
+            spoon.ModalMgr:deactivate({"clipshowM"})
+        end)
+    end
+
     -- Register clipshowM with modal supervisor
     hsclipsM_keys = hsclipsM_keys or {{"alt", "ctrl", "cmd", "shift"}, "C"}
     if string.len(hsclipsM_keys[2]) > 0 then
