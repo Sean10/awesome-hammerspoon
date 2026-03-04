@@ -164,25 +164,15 @@ function obj:loadSnippets()
       return
    end
 
-   -- Parse snippets: split by empty lines, using Set to avoid duplicates
+   -- Parse snippets: split by double newlines
    local snippets = {}
    local seen = {}
-   for snippet in content:gmatch("(.-)\n\n+") do
-      -- Remove trailing whitespace/newlines from each snippet
-      snippet = snippet:gsub("%s+$", "")
-      if snippet and snippet ~= "" and not seen[snippet] then
+   
+   for snippet in (content .. "\n\n"):gmatch("(.-)\n\n") do
+      snippet = snippet:gsub("^%s+", ""):gsub("%s+$", "")
+      if snippet ~= "" and not seen[snippet] then
          seen[snippet] = true
          table.insert(snippets, snippet)
-      end
-   end
-
-   -- Handle case where there's no trailing empty line
-   local lastSnippet = content:match(".-%S.*$")
-   if lastSnippet and lastSnippet:match("%S") then
-      lastSnippet = lastSnippet:gsub("%s+$", "")
-      if lastSnippet and lastSnippet ~= "" and not seen[lastSnippet] then
-         seen[lastSnippet] = true
-         table.insert(snippets, lastSnippet)
       end
    end
 
@@ -413,6 +403,11 @@ end
 function obj:pasteboardToClipboard(item)
    table.insert(clipboard_history, 1, item)
    clipboard_history = self:dedupe_and_resize(clipboard_history)
+   
+   -- Set LRU timestamp for newly copied item so it appears at the top
+   self.clipboardHistoryLRU[item] = os.time()
+   setSetting("clipboardHistoryLRU", self.clipboardHistoryLRU)
+   
    _persistHistory() -- updates the saved history
    
    -- Clear cache when history changes
