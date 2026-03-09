@@ -275,4 +275,90 @@ function obj:centerCursor()
     end
 end
 
+--- WinWin:splitSideBySide()
+--- Method
+--- Split the first two windows side by side (left and right half of screen).
+---
+
+function obj:splitSideBySide()
+    -- 使用 orderedWindows 获取按 Z 轴顺序 (前台到后台) 排列的窗口
+    local orderedWindows = hs.window.orderedWindows()
+    if #orderedWindows < 2 then
+        hs.alert.show("需要至少 2 个可见窗口!")
+        return
+    end
+
+    -- 获取焦点窗口 (最前台的窗口)
+    local focused = hs.window.focusedWindow()
+    if not focused then
+        hs.alert.show("没有焦点窗口!")
+        return
+    end
+
+    -- 找到第二个窗口 (除了焦点窗口外的第一个可见窗口)
+    local secondWin = nil
+    for i, win in ipairs(orderedWindows) do
+        if win ~= focused and win:isVisible() and win:isStandard() then
+            secondWin = win
+            break
+        end
+    end
+
+    if not secondWin then
+        hs.alert.show("需要至少 2 个可见窗口!")
+        return
+    end
+
+    local cscreen = focused:screen()
+    local cres = cscreen:fullFrame()
+
+    -- 焦点窗口 (最前台) 放在左边
+    focused:setFrame({x=cres.x, y=cres.y, w=cres.w/2, h=cres.h})
+    -- 第二个窗口放在右边
+    secondWin:setFrame({x=cres.x+cres.w/2, y=cres.y, w=cres.w/2, h=cres.h})
+end
+
+--- WinWin:splitTopBottom()
+--- Method
+--- Split the first two windows top and bottom (upper and lower half of screen).
+---
+
+function obj:splitTopBottom()
+    -- 使用 orderedWindows 获取按 Z 轴顺序 (前台到后台) 排列的窗口
+    local orderedWindows = hs.window.orderedWindows()
+    if #orderedWindows < 2 then
+        hs.alert.show("需要至少 2 个可见窗口!")
+        return
+    end
+
+    -- 获取焦点窗口 (最前台的窗口)
+    local focused = hs.window.focusedWindow()
+    if not focused then
+        hs.alert.show("没有焦点窗口!")
+        return
+    end
+
+    -- 找到第二个窗口 (除了焦点窗口外的第一个可见窗口)
+    local secondWin = nil
+    for i, win in ipairs(orderedWindows) do
+        if win ~= focused and win:isVisible() and win:isStandard() then
+            secondWin = win
+            break
+        end
+    end
+
+    if not secondWin then
+        hs.alert.show("需要至少 2 个可见窗口!")
+        return
+    end
+
+    local cscreen = focused:screen()
+    local cres = cscreen:fullFrame()
+
+    -- 焦点窗口 (最前台) 放在上边
+    focused:setFrame({x=cres.x, y=cres.y, w=cres.w, h=cres.h/2})
+    -- 第二个窗口放在下边
+    secondWin:setFrame({x=cres.x, y=cres.y+cres.h/2, w=cres.w, h=cres.h/2})
+end
+
 return obj

@@ -303,6 +303,8 @@ if spoon.WinWin then
     cmodal:bind('', '[', 'Undo Window Manipulation', function() spoon.WinWin:undo() end)
     cmodal:bind('', ']', 'Redo Window Manipulation', function() spoon.WinWin:redo() end)
     cmodal:bind('', '`', 'Center Cursor', function() spoon.WinWin:centerCursor() end)
+    cmodal:bind('', 'X', 'Split Side by Side', function() spoon.WinWin:splitSideBySide() end)
+    cmodal:bind('', 'Z', 'Split Top Bottom', function() spoon.WinWin:splitTopBottom() end)
 
     -- Register resizeM with modal supervisor
     hsresizeM_keys = hsresizeM_keys or {{"alt", "ctrl", "cmd", "shift"}, "R"}
