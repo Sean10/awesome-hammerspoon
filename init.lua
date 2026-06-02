@@ -440,33 +440,56 @@ do
         ["com.parallels.desktop.console"]    = true,  -- Parallels Desktop
     }
 
-    -- Auto-switch input method based on active app
-    hs.application.watcher.new(function(appName, eventType, app)
-        if eventType == hs.application.watcher.activated then
-            local bid = app:bundleID()
-            local cur = hs.keycodes.currentSourceID()
-            if bid and englishApps[bid] then
-                if cur and cur:find("sogou") then
-                    hs.task.new(tisutil, nil, {"select", "com.apple.keylayout.USExtended"}):start()
+    -- Auto-switch input method on app focus change (event-driven via NSWorkspace)
+    -- Stored in _G to prevent Lua GC from collecting the watcher (GC would silently
+    -- call removeObserver, causing the watcher to stop with no error)
+    local lastBid = nil
+    local lastTrigger = hs.timer.secondsSinceEpoch()
+
+    local function restartWatcher()
+        if _G._imeAppWatcher then _G._imeAppWatcher:stop() end
+        _G._imeAppWatcher = hs.application.watcher.new(function(appName, event, app)
+            local ok, err = xpcall(function()
+                if event ~= hs.application.watcher.activated then return end
+                local bid = app:bundleID()
+                if not bid or bid == lastBid then return end
+                lastBid = bid
+                lastTrigger = hs.timer.secondsSinceEpoch()
+                local cur = hs.keycodes.currentSourceID()
+                if englishApps[bid] then
+                    if cur and cur:find("sogou") then
+                        hs.task.new(tisutil, nil, {"select", "com.apple.keylayout.USExtended"}):start()
+                    end
+                else
+                    if cur and not cur:find("sogou") then
+                        hs.task.new(tisutil, nil, {"select", "com.sogou.inputmethod.sogou.pinyin"}):start()
+                    end
                 end
-            else
-                if cur and not cur:find("sogou") then
-                    hs.task.new(tisutil, nil, {"select", "com.sogou.inputmethod.sogou.pinyin"}):start()
-                end
-            end
+            end, debug.traceback)
+            if not ok then hs.notify.show("IME switcher error", "", tostring(err)) end
+        end)
+        _G._imeAppWatcher:start()
+    end
+
+    restartWatcher()
+
+    -- Watchdog: rebuild watcher every 3min if it silently stopped firing
+    _G._imeWatchdog = hs.timer.doEvery(180, function()
+        if hs.timer.secondsSinceEpoch() - lastTrigger > 180 then
+            restartWatcher()
         end
-    end):start()
+    end)
 
     -- Shift tap detection
     local activeKeyCode = nil
     local cleanTap = true
 
-    local kdTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(_)
+    _G._imeKdTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(_)
         cleanTap = false
         return false
     end)
 
-    hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
+    _G._imeFlagsTap = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
         local flags = event:getFlags()
         local keyCode = event:getKeyCode()
 
@@ -475,15 +498,16 @@ do
             if shiftNow and activeKeyCode == nil then
                 activeKeyCode = keyCode
                 cleanTap = true
-                kdTap:start()
+                _G._imeKdTap:start()
             elseif not shiftNow and activeKeyCode == keyCode then
                 activeKeyCode = nil
-                kdTap:stop()
+                _G._imeKdTap:stop()
                 if cleanTap then
                     hs.task.new(tisutil, nil, {"toggle"}):start()
                 end
             end
         end
         return false
-    end):start()
+    end)
+    _G._imeFlagsTap:start()
 end
