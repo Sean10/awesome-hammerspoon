@@ -422,3 +422,64 @@ hs.hotkey.bind("alt", "o", function()
         logger.i(res)
     end
 end)
+
+----------------------------------------------------------------------------------------------------
+-- Input method management:
+-- 1. Shift tap: toggle between Sogou Chinese ↔ US Extended
+-- 2. Auto-switch to US Extended for specific apps (bypasses Sogou English mode)
+----------------------------------------------------------------------------------------------------
+do
+    local tisutil = hs.configdir .. "/tisutil"
+
+    -- Apps that should always use US Extended (not Sogou English mode)
+    local englishApps = {
+        ["com.googlecode.iterm2"]            = true,  -- iTerm2
+        ["com.microsoft.VSCode"]             = true,  -- VS Code
+        ["com.todesktop.230313mzl4w4u92"]    = true,  -- Cursor
+        ["com.jetbrains.intellij"]           = true,  -- IntelliJ IDEA
+        ["com.parallels.desktop.console"]    = true,  -- Parallels Desktop
+    }
+
+    -- Auto-switch to US Extended when target app is activated
+    hs.application.watcher.new(function(appName, eventType, app)
+        if eventType == hs.application.watcher.activated then
+            local bid = app:bundleID()
+            if bid and englishApps[bid] then
+                local cur = hs.keycodes.currentSourceID()
+                if cur and cur:find("sogou") then
+                    hs.task.new(tisutil, nil, {"select", "com.apple.keylayout.USExtended"}):start()
+                end
+            end
+        end
+    end):start()
+
+    -- Shift tap detection
+    local activeKeyCode = nil
+    local cleanTap = true
+
+    local kdTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(_)
+        cleanTap = false
+        return false
+    end)
+
+    hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
+        local flags = event:getFlags()
+        local keyCode = event:getKeyCode()
+
+        if keyCode == 56 or keyCode == 60 then
+            local shiftNow = flags.shift or false
+            if shiftNow and activeKeyCode == nil then
+                activeKeyCode = keyCode
+                cleanTap = true
+                kdTap:start()
+            elseif not shiftNow and activeKeyCode == keyCode then
+                activeKeyCode = nil
+                kdTap:stop()
+                if cleanTap then
+                    hs.task.new(tisutil, nil, {"toggle"}):start()
+                end
+            end
+        end
+        return false
+    end):start()
+end
