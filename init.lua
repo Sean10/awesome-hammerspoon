@@ -440,14 +440,18 @@ do
         ["com.parallels.desktop.console"]    = true,  -- Parallels Desktop
     }
 
-    -- Auto-switch to US Extended when target app is activated
+    -- Auto-switch input method based on active app
     hs.application.watcher.new(function(appName, eventType, app)
         if eventType == hs.application.watcher.activated then
             local bid = app:bundleID()
+            local cur = hs.keycodes.currentSourceID()
             if bid and englishApps[bid] then
-                local cur = hs.keycodes.currentSourceID()
                 if cur and cur:find("sogou") then
                     hs.task.new(tisutil, nil, {"select", "com.apple.keylayout.USExtended"}):start()
+                end
+            else
+                if cur and not cur:find("sogou") then
+                    hs.task.new(tisutil, nil, {"select", "com.sogou.inputmethod.sogou.pinyin"}):start()
                 end
             end
         end
