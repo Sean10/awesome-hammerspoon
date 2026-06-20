@@ -106,6 +106,16 @@ obj.snippets = nil
 obj.snippetHistory = nil
 -- Internal variable - Clipboard history access timestamps (for LRU sorting)
 obj.clipboardHistoryLRU = nil
+-- Internal variable - Per-item access timestamp log for auto-pin detection
+obj.clipboardAccessLog = nil
+--- TextClipboardHistory.autoPinThreshold
+--- Variable
+--- Number of accesses within autoPinWindowDays required to auto-pin an item. Defaults to 5.
+obj.autoPinThreshold = 5
+--- TextClipboardHistory.autoPinWindowDays
+--- Variable
+--- Rolling window in days for counting accesses toward auto-pin threshold. Defaults to 1.
+obj.autoPinWindowDays = 1
 obj.selectorobj = nil
 -- Internal variable - Cache for focused window to work around the current window losing focus after the chooser comes up
 obj.prevFocusedWindow = nil
@@ -168,8 +178,8 @@ function obj:loadSnippets()
    local snippets = {}
    local seen = {}
    
-   for snippet in (content .. "\n\n"):gmatch("(.-)\n\n") do
-      snippet = snippet:gsub("^%s+", ""):gsub("%s+$", "")
+   for raw_snippet in (content .. "\n\n"):gmatch("(.-)\n\n") do
+      local snippet = raw_snippet:gsub("^%s+", ""):gsub("%s+$", "")
       if snippet ~= "" and not seen[snippet] then
          seen[snippet] = true
          table.insert(snippets, snippet)
@@ -197,7 +207,7 @@ function obj:useSnippet(snippetContent)
 
    -- Copy to clipboard
    pasteboard.setContents(snippetContent)
-   self:pasteboardToClipboard(snippetContent)
+   self:pasteboardToClipboard(snippetContent, true)
 
    -- Auto-paste
    hs.eventtap.keyStroke({"cmd"}, "v")
@@ -345,8 +355,14 @@ function obj:_filterMenuData(menuData, query)
                score = 10
             end
             
-            -- Boost score for shorter text (more relevant)
-            score = score + (1000 / math.max(string.len(item.originalText), 1))
+            -- Tiebreak by LRU: divide by a large constant to get a fractional
+            -- boost (0-1 range) so LRU never overrides a genuine relevance gap,
+            -- but does break ties between items with equal text-match scores.
+            local lruBoost = 0
+            if item.lruTime and item.lruTime > 0 then
+               lruBoost = item.lruTime / 2000000000
+            end
+            score = score + lruBoost
             
             -- Create a copy of the item with highlighted text
             local highlightedItem = {}
@@ -391,6 +407,69 @@ function obj:dedupe_and_resize(list)
    return res
 end
 
+-- Internal method: record an access timestamp for auto-pin tracking
+function obj:_recordAccess(item)
+   if not self.clipboardAccessLog then return end
+   if not self.clipboardAccessLog[item] then
+      self.clipboardAccessLog[item] = {}
+   end
+   table.insert(self.clipboardAccessLog[item], os.time())
+   setSetting("clipboardAccessLog", self.clipboardAccessLog)
+end
+
+-- Internal method: prune access log entries older than autoPinWindowDays
+function obj:_pruneAccessLog()
+   if not self.clipboardAccessLog then return end
+   local cutoff = os.time() - (self.autoPinWindowDays * 86400)
+   for item, times in pairs(self.clipboardAccessLog) do
+      local fresh = {}
+      for _, t in ipairs(times) do
+         if t >= cutoff then table.insert(fresh, t) end
+      end
+      if #fresh == 0 then
+         self.clipboardAccessLog[item] = nil
+      else
+         self.clipboardAccessLog[item] = fresh
+      end
+   end
+   setSetting("clipboardAccessLog", self.clipboardAccessLog)
+end
+
+--- TextClipboardHistory:checkAutoPinCandidates()
+--- Method
+--- Check access log and append items exceeding autoPinThreshold to snippets file.
+function obj:checkAutoPinCandidates()
+   if not self.clipboardAccessLog then return end
+   self:_pruneAccessLog()
+
+   local cutoff = os.time() - (self.autoPinWindowDays * 86400)
+
+   for item, times in pairs(self.clipboardAccessLog) do
+      -- Count accesses within the window
+      local count = 0
+      for _, t in ipairs(times) do
+         if t >= cutoff then count = count + 1 end
+      end
+
+      if count >= self.autoPinThreshold then
+         -- Check if already in snippets
+         local already_pinned = false
+         for _, s in ipairs(self.snippets or {}) do
+            if s == item then already_pinned = true; break end
+         end
+
+         if not already_pinned then
+            local f = io.open(self.snippetFilePath, "a")
+            if f then
+               f:write("\n\n" .. item)
+               f:close()
+               self.logger.df("Auto-pinned item to snippets: %s", item)
+            end
+         end
+      end
+   end
+end
+
 --- TextClipboardHistory:pasteboardToClipboard(item)
 --- Method
 --- Add the given string to the history
@@ -400,17 +479,18 @@ end
 ---
 --- Returns:
 ---  * None
-function obj:pasteboardToClipboard(item)
+function obj:pasteboardToClipboard(item, skip_lru)
    table.insert(clipboard_history, 1, item)
    clipboard_history = self:dedupe_and_resize(clipboard_history)
-   
-   -- Set LRU timestamp for newly copied item so it appears at the top
-   self.clipboardHistoryLRU[item] = os.time()
-   setSetting("clipboardHistoryLRU", self.clipboardHistoryLRU)
-   
-   _persistHistory() -- updates the saved history
-   
-   -- Clear cache when history changes
+
+   if not skip_lru then
+      self.clipboardHistoryLRU[item] = os.time()
+      setSetting("clipboardHistoryLRU", self.clipboardHistoryLRU)
+   end
+
+   self:_recordAccess(item)
+   _persistHistory()
+
    self.menuDataCache = nil
    self.filteredMenuDataCache = nil
    self.lastSearchQuery = ""
@@ -460,11 +540,13 @@ function obj:_populateChooser()
          displayText = string.gsub(displayText, "\n", " ")
          displayText = string.gsub(displayText, "\r", " ")
 
-         -- Use LRU timestamp if available, otherwise use index as fallback
+         -- Use LRU timestamp if available, otherwise fall back to insert-order.
+         -- Fallback is offset far below any real os.time() so accessed items
+         -- always sort above never-accessed ones, while never-accessed items
+         -- still sort among themselves newest-first (idx 1 = most recent).
          local lruTime = self.clipboardHistoryLRU[v]
          if not lruTime then
-            -- Give newer items higher timestamps based on index
-            lruTime = 1000000000 + (1000 - idx)
+            lruTime = -(idx)
          end
 
          table.insert(allItems, {
@@ -581,6 +663,13 @@ function obj:checkAndStorePasteboard()
    end
 end
 
+-- Internal method: initialize clipboard_history for testing without starting timers/watchers
+function obj:_initHistory()
+   clipboard_history = {}
+   last_change = pasteboard.changeCount()
+   self.clipboardAccessLog = self.clipboardAccessLog or {}
+end
+
 --- TextClipboardHistory:start()
 --- Method
 --- Start the clipboard history collector
@@ -603,6 +692,9 @@ function obj:start()
 
    -- Initialize clipboard history LRU timestamps
    self.clipboardHistoryLRU = getSetting("clipboardHistoryLRU", {})
+
+   -- Initialize access log for auto-pin
+   self.clipboardAccessLog = getSetting("clipboardAccessLog", {})
 
    clipboard_history = self:dedupe_and_resize(getSetting("items", {})) -- If no history is saved on the system, create an empty history
    last_change = pasteboard.changeCount() -- keeps track of how many times the pasteboard owner has changed // Indicates a new copy has been made

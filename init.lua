@@ -383,7 +383,7 @@ spoon.ModalMgr.supervisor:enter()
 hs.loadSpoon('TextClipboardHistory')
 spoon.TextClipboardHistory.show_in_menubar = false
 spoon.TextClipboardHistory.paste_on_select = true
-spoon.TextClipboardHistory.honor_ignoredidentifiers = true
+spoon.TextClipboardHistory.honor_ignoredidentifiers = false
 -- Reduce history size for better performance
 spoon.TextClipboardHistory.hist_size = 500
 -- Increase check frequency slightly for better responsiveness
@@ -423,91 +423,112 @@ hs.hotkey.bind("alt", "o", function()
     end
 end)
 
-----------------------------------------------------------------------------------------------------
--- Input method management:
--- 1. Shift tap: toggle between Sogou Chinese ↔ US Extended
--- 2. Auto-switch to US Extended for specific apps (bypasses Sogou English mode)
-----------------------------------------------------------------------------------------------------
-do
-    local tisutil = hs.configdir .. "/tisutil"
+-- ----------------------------------------------------------------------------------------------------
+-- -- Input method management:
+-- -- 1. Shift tap: toggle between Sogou Chinese ↔ US Extended
+-- -- 2. Auto-switch to US Extended for specific apps (bypasses Sogou English mode)
+-- ----------------------------------------------------------------------------------------------------
+-- do
+--     -- Native API switching (replaces tisutil subprocess for ~100-300ms latency savings)
+--     -- Note: layouts() returns a dict {name=name}, methods() returns an array {"name",...}
+--     local function setIME(name)
+--         if hs.keycodes.layouts()[name] then return hs.keycodes.setLayout(name) end
+--         for _, m in ipairs(hs.keycodes.methods() or {}) do
+--             if m == name then return hs.keycodes.setMethod(name) end
+--         end
+--         return false
+--     end
 
-    -- Apps that should always use US Extended (not Sogou English mode)
-    local englishApps = {
-        ["com.googlecode.iterm2"]            = true,  -- iTerm2
-        ["com.microsoft.VSCode"]             = true,  -- VS Code
-        ["com.todesktop.230313mzl4w4u92"]    = true,  -- Cursor
-        ["com.jetbrains.intellij"]           = true,  -- IntelliJ IDEA
-        ["com.parallels.desktop.console"]    = true,  -- Parallels Desktop
-    }
+--     local ENGLISH_LAYOUT = "USExtended"
 
-    -- Auto-switch input method on app focus change (event-driven via NSWorkspace)
-    -- Stored in _G to prevent Lua GC from collecting the watcher (GC would silently
-    -- call removeObserver, causing the watcher to stop with no error)
-    local lastBid = nil
-    local lastTrigger = hs.timer.secondsSinceEpoch()
+--     -- Detect Sogou method name from enabled methods (name may be "Sogou Pinyin" or "搜狗拼音")
+--     local SOGOU_METHOD = nil
+--     for _, m in ipairs(hs.keycodes.methods() or {}) do
+--         if m:lower():find("sogou") then SOGOU_METHOD = m; break end
+--     end
 
-    local function restartWatcher()
-        if _G._imeAppWatcher then _G._imeAppWatcher:stop() end
-        _G._imeAppWatcher = hs.application.watcher.new(function(appName, event, app)
-            local ok, err = xpcall(function()
-                if event ~= hs.application.watcher.activated then return end
-                local bid = app:bundleID()
-                if not bid or bid == lastBid then return end
-                lastBid = bid
-                lastTrigger = hs.timer.secondsSinceEpoch()
-                local cur = hs.keycodes.currentSourceID()
-                if englishApps[bid] then
-                    if cur and cur:find("sogou") then
-                        hs.task.new(tisutil, nil, {"select", "com.apple.keylayout.USExtended"}):start()
-                    end
-                else
-                    if cur and not cur:find("sogou") then
-                        hs.task.new(tisutil, nil, {"select", "com.sogou.inputmethod.sogou.pinyin"}):start()
-                    end
-                end
-            end, debug.traceback)
-            if not ok then hs.notify.show("IME switcher error", "", tostring(err)) end
-        end)
-        _G._imeAppWatcher:start()
-    end
+--     -- Apps that should always use US Extended (not Sogou English mode)
+--     local englishApps = {
+--         ["com.googlecode.iterm2"]            = true,  -- iTerm2
+--         ["com.microsoft.VSCode"]             = true,  -- VS Code
+--         ["com.todesktop.230313mzl4w4u92"]    = true,  -- Cursor
+--         ["com.jetbrains.intellij"]           = true,  -- IntelliJ IDEA
+--         ["com.parallels.desktop.console"]    = true,  -- Parallels Desktop
+--     }
 
-    restartWatcher()
+--     -- Auto-switch input method on app focus change (event-driven via NSWorkspace)
+--     -- Stored in _G to prevent Lua GC from collecting the watcher (GC would silently
+--     -- call removeObserver, causing the watcher to stop with no error)
+--     local lastBid = nil
+--     local lastTrigger = hs.timer.secondsSinceEpoch()
 
-    -- Watchdog: rebuild watcher every 3min if it silently stopped firing
-    _G._imeWatchdog = hs.timer.doEvery(180, function()
-        if hs.timer.secondsSinceEpoch() - lastTrigger > 180 then
-            restartWatcher()
-        end
-    end)
+--     local function restartWatcher()
+--         if _G._imeAppWatcher then _G._imeAppWatcher:stop() end
+--         _G._imeAppWatcher = hs.application.watcher.new(function(appName, event, app)
+--             local ok, err = xpcall(function()
+--                 if event ~= hs.application.watcher.activated then return end
+--                 local bid = app:bundleID()
+--                 if not bid or bid == lastBid then return end
+--                 lastBid = bid
+--                 lastTrigger = hs.timer.secondsSinceEpoch()
+--                 local cur = hs.keycodes.currentSourceID()
+--                 if englishApps[bid] then
+--                     if cur and cur:find("sogou") then
+--                         setIME(ENGLISH_LAYOUT)
+--                     end
+--                 else
+--                     if cur and not cur:find("sogou") and SOGOU_METHOD then
+--                         setIME(SOGOU_METHOD)
+--                     end
+--                 end
+--             end, debug.traceback)
+--             if not ok then hs.notify.show("IME switcher error", "", tostring(err)) end
+--         end)
+--         _G._imeAppWatcher:start()
+--     end
 
-    -- Shift tap detection
-    local activeKeyCode = nil
-    local cleanTap = true
+--     restartWatcher()
 
-    _G._imeKdTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(_)
-        cleanTap = false
-        return false
-    end)
+--     -- Watchdog: rebuild watcher every 3min if it silently stopped firing
+--     _G._imeWatchdog = hs.timer.doEvery(180, function()
+--         if hs.timer.secondsSinceEpoch() - lastTrigger > 180 then
+--             restartWatcher()
+--         end
+--     end)
 
-    _G._imeFlagsTap = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
-        local flags = event:getFlags()
-        local keyCode = event:getKeyCode()
+--     -- Shift tap detection
+--     local activeKeyCode = nil
+--     local cleanTap = true
 
-        if keyCode == 56 or keyCode == 60 then
-            local shiftNow = flags.shift or false
-            if shiftNow and activeKeyCode == nil then
-                activeKeyCode = keyCode
-                cleanTap = true
-                _G._imeKdTap:start()
-            elseif not shiftNow and activeKeyCode == keyCode then
-                activeKeyCode = nil
-                _G._imeKdTap:stop()
-                if cleanTap then
-                    hs.task.new(tisutil, nil, {"toggle"}):start()
-                end
-            end
-        end
-        return false
-    end)
-    _G._imeFlagsTap:start()
-end
+--     _G._imeKdTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(_)
+--         cleanTap = false
+--         return false
+--     end)
+
+--     _G._imeFlagsTap = hs.eventtap.new({hs.eventtap.event.types.flagsChanged}, function(event)
+--         local flags = event:getFlags()
+--         local keyCode = event:getKeyCode()
+
+--         if keyCode == 56 or keyCode == 60 then
+--             local shiftNow = flags.shift or false
+--             if shiftNow and activeKeyCode == nil then
+--                 activeKeyCode = keyCode
+--                 cleanTap = true
+--                 _G._imeKdTap:start()
+--             elseif not shiftNow and activeKeyCode == keyCode then
+--                 activeKeyCode = nil
+--                 _G._imeKdTap:stop()
+--                 if cleanTap then
+--                     local cur = hs.keycodes.currentSourceID()
+--                     if cur and cur:find("sogou") then
+--                         setIME(ENGLISH_LAYOUT)
+--                     elseif SOGOU_METHOD then
+--                         setIME(SOGOU_METHOD)
+--                     end
+--                 end
+--             end
+--         end
+--         return false
+--     end)
+--     _G._imeFlagsTap:start()
+-- end
