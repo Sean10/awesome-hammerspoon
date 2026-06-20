@@ -205,9 +205,8 @@ function obj:useSnippet(snippetContent)
    self.snippetHistory[snippetContent] = os.time()
    setSetting("snippetHistory", self.snippetHistory)
 
-   -- Copy to clipboard
+   -- Copy to clipboard but do NOT add to clipboard_history
    pasteboard.setContents(snippetContent)
-   self:pasteboardToClipboard(snippetContent, true)
 
    -- Auto-paste
    hs.eventtap.keyStroke({"cmd"}, "v")
@@ -668,6 +667,11 @@ function obj:_initHistory()
    clipboard_history = {}
    last_change = pasteboard.changeCount()
    self.clipboardAccessLog = self.clipboardAccessLog or {}
+end
+
+-- Internal method: returns the number of items in clipboard_history (for testing)
+function obj:getHistorySize()
+   return #clipboard_history
 end
 
 --- TextClipboardHistory:start()

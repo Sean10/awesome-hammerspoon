@@ -466,6 +466,24 @@ describe("_processSelectedItem LRU update", function()
       assert.is_nil(obj.clipboardHistoryLRU["my snippet"])
    end)
 
+   it("selecting a snippet does NOT add it to clipboard_history", function()
+      local before = obj:getHistorySize()
+      obj:_processSelectedItem({
+         text = "📋 my snippet",
+         originalText = "my snippet",
+         isSnippet = true,
+      })
+      assert.equal(before, obj:getHistorySize())
+   end)
+
+   it("useSnippet does NOT add snippet to clipboard_history", function()
+      obj.snippetHistory = {}
+      local before = obj:getHistorySize()
+      obj:useSnippet("some snippet text")
+      assert.equal(before, obj:getHistorySize())
+      assert.truthy(obj.snippetHistory["some snippet text"])
+   end)
+
    it("action item does not update LRU", function()
       obj:pasteboardToClipboard("some item")
       local lru_before = {}
